@@ -5,7 +5,7 @@ import (
 	_ "embed"
 	"fmt"
 	"github.com/datadog/stratus-red-team/v2/pkg/stratus/log"
-	"os"
+	"io"
 
 	"github.com/datadog/stratus-red-team/v2/internal/utils"
 	"github.com/datadog/stratus-red-team/v2/pkg/stratus"
@@ -120,19 +120,26 @@ func detonate(params map[string]string, providers stratus.CloudProviders) error 
 }
 
 func downloadAllBlobs(client *azblob.Client) error {
-	f, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
 	blobMap, err := utils.ListAllBlobVersions(client)
 	if err != nil {
 		return err
 	}
 	for containerName, versionMap := range blobMap {
 		for blobName := range versionMap {
-			_, err := client.DownloadFile(context.Background(), containerName, blobName, f, nil)
+			// Deliberately not client.DownloadFile() to /dev/null: DownloadFile
+			// calls Truncate() on its destination handle to size it for
+			// concurrent ranged writes, and Truncate() on a character device
+			// (like /dev/null) fails with EINVAL on Linux -- confirmed via a
+			// live run against the pinned upstream release. DownloadStream +
+			// discarding the body is sequential and never touches Truncate(),
+			// matching the pattern already used by the CPEK/client-encryption-
+			// scope ransomware techniques in this same package.
+			downloadResp, err := client.DownloadStream(context.Background(), containerName, blobName, nil)
+			if err != nil {
+				return fmt.Errorf("error when downloading blob %s in container %s: %w", blobName, containerName, err)
+			}
+			_, err = io.Copy(io.Discard, downloadResp.Body)
+			downloadResp.Body.Close()
 			if err != nil {
 				return fmt.Errorf("error when downloading blob %s in container %s: %w", blobName, containerName, err)
 			}

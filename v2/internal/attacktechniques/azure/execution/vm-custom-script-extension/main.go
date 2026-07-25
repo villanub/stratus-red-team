@@ -88,11 +88,28 @@ func detonate(params map[string]string, providers stratus.CloudProviders) error 
 		return errors.New("failed to create VM extensions client: " + err.Error())
 	}
 
+	// The extension resource's Location must match the VM's own region --
+	// it used to be hardcoded to "West US" here regardless of where the VM
+	// actually lives, which 404s ("entity not found in this Azure location")
+	// whenever the VM is anywhere else. Read the VM's real location instead
+	// of assuming one.
+	vmClient, err := armcompute.NewVirtualMachinesClient(subscriptionID, cred, clientOptions)
+	if err != nil {
+		return errors.New("failed to create VM client: " + err.Error())
+	}
+	vm, err := vmClient.Get(ctx, resourceGroup, vmName, nil)
+	if err != nil {
+		return errors.New("unable to retrieve the virtual machine to determine its location: " + err.Error())
+	}
+	if vm.Location == nil {
+		return errors.New("virtual machine " + vmName + " has no location set")
+	}
+
 	log.Println("Configuring Custom Script Extension for VM instance " + vmName)
 	log.Println("This will cause a command to be run as SYSTEM on the machine")
 
 	vmExtension := armcompute.VirtualMachineExtension{
-		Location: to.Ptr("West US"),
+		Location: vm.Location,
 		Properties: &armcompute.VirtualMachineExtensionProperties{
 			Type:                    to.Ptr("CustomScriptExtension"),
 			AutoUpgradeMinorVersion: to.Ptr(true),
