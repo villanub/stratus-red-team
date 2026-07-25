@@ -66,7 +66,19 @@ func detonate(_ map[string]string, providers stratus.CloudProviders) error {
 	log.Println("Creating password credential on malicious application")
 	newCredentials := graphmodels.NewPasswordCredential()
 	newCredentials.SetDisplayName(ptr.String("stratus red team"))
-	newCredentialsResponse, err := graphClient.Applications().ByApplicationId(*response.GetId()).AddPassword().Post(context.Background(), nil, nil)
+	var newCredentialsResponse graphmodels.PasswordCredentialable
+	// Same eventual-consistency window as the service principal/role
+	// assignment below, just earlier: adding a credential to the
+	// application moments after creating it can 404 with "Resource ...
+	// does not exist or one of its queried reference-property objects
+	// are not present" until the application has propagated. Confirmed
+	// live 2026-07-25 -- this exact call was the one still failing after
+	// the first pass of this fix only wrapped the two calls below it.
+	err = utils.RetryOnGraphEventualConsistency(func() error {
+		var postErr error
+		newCredentialsResponse, postErr = graphClient.Applications().ByApplicationId(*response.GetId()).AddPassword().Post(context.Background(), nil, nil)
+		return postErr
+	})
 	if err != nil {
 		return errors.New("could not create application credentials: " + err.Error())
 	}
