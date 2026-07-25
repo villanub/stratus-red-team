@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/aws/smithy-go/ptr"
+	"github.com/datadog/stratus-red-team/v2/internal/utils"
 	"github.com/datadog/stratus-red-team/v2/pkg/stratus"
 	"github.com/datadog/stratus-red-team/v2/pkg/stratus/log"
 	"github.com/datadog/stratus-red-team/v2/pkg/stratus/mitreattack"
@@ -73,7 +74,17 @@ func detonate(_ map[string]string, providers stratus.CloudProviders) error {
 	log.Println("Creating a service principal for the application")
 	servicePrincipal := graphmodels.NewServicePrincipal()
 	servicePrincipal.SetAppId(response.GetAppId())
-	spResponse, err := graphClient.ServicePrincipals().Post(context.Background(), servicePrincipal, nil)
+	var spResponse graphmodels.ServicePrincipalable
+	// Graph's directory replication is eventually consistent: creating a
+	// service principal for an application moments after creating the
+	// application can fail with "Resource does not exist or one of its
+	// queried reference-property objects are not present" until the
+	// application has propagated. Confirmed live 2026-07-23.
+	err = utils.RetryOnGraphEventualConsistency(func() error {
+		var postErr error
+		spResponse, postErr = graphClient.ServicePrincipals().Post(context.Background(), servicePrincipal, nil)
+		return postErr
+	})
 	if err != nil {
 		return errors.New("could not create service principal: " + err.Error())
 	}
@@ -83,7 +94,12 @@ func detonate(_ map[string]string, providers stratus.CloudProviders) error {
 	roleAssignment.SetRoleDefinitionId(ptr.String("62e90394-69f5-4237-9190-012177145e10"))
 	roleAssignment.SetPrincipalId(spResponse.GetId())
 	roleAssignment.SetDirectoryScopeId(ptr.String("/"))
-	_, err = graphClient.RoleManagement().Directory().RoleAssignments().Post(context.Background(), roleAssignment, nil)
+	// Same eventual-consistency window as above, this time for the
+	// service principal just created.
+	err = utils.RetryOnGraphEventualConsistency(func() error {
+		_, postErr := graphClient.RoleManagement().Directory().RoleAssignments().Post(context.Background(), roleAssignment, nil)
+		return postErr
+	})
 	if err != nil {
 		return errors.New("could not assign role to application: " + err.Error())
 	}

@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"github.com/datadog/stratus-red-team/v2/internal/utils"
 	"github.com/datadog/stratus-red-team/v2/pkg/stratus"
 	"github.com/datadog/stratus-red-team/v2/pkg/stratus/log"
 	"github.com/datadog/stratus-red-team/v2/pkg/stratus/mitreattack"
@@ -84,7 +85,13 @@ func detonate(params map[string]string, providers stratus.CloudProviders) error 
 	requestBodyMember := graphmodels.NewReferenceCreate()
 	odataId := fmt.Sprintf("https://graph.microsoft.com/v1.0/users/%s", backdoorUserId)
 	requestBodyMember.SetOdataId(&odataId)
-	err = graphClient.Directory().AdministrativeUnits().ByAdministrativeUnitId(auId).Members().Ref().Post(context.Background(), requestBodyMember, nil)
+	// Graph's directory replication is eventually consistent: referencing
+	// the AU by ID moments after creating it can fail with "Resource does
+	// not exist or one of its queried reference-property objects are not
+	// present" until it has propagated. Confirmed live 2026-07-24.
+	err = utils.RetryOnGraphEventualConsistency(func() error {
+		return graphClient.Directory().AdministrativeUnits().ByAdministrativeUnitId(auId).Members().Ref().Post(context.Background(), requestBodyMember, nil)
+	})
 
 	if err != nil {
 		return errors.New("could not add member to AU: " + err.Error())
